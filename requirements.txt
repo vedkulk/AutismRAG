@@ -1,0 +1,14 @@
+streamlit
+chromadb
+pypdf
+PyPDF2
+pdfplumber
+requests
+python-dotenv
+sentence-transformers
+langchain
+langchain-community
+langchain-ollama
+numpy
+cryptography
+rank-bm25

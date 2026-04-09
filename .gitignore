@@ -1,0 +1,35 @@
+# macOS
+.DS_Store
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Secrets and local environment files
+.env
+.env.*
+*.key
+secret.key
+
+# Local tool settings
+.claude/settings.local.json
+
+# Logs and runtime output
+logs/
+*.log
+
+# Generated RAG/vector/cache artifacts
+data/chroma_kb/
+data/session_chroma/
+data/kb_cache/
+data/session_reports/
