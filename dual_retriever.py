@@ -273,13 +273,13 @@ class DualRetriever:
         # ── Adjust retrieval weights based on query type ────────────────
         if query_type == "patient":
             effective_report_k = max(report_k, 10)  # retrieve nearly all report chunks
-            effective_kb_k = 4                        # some KB for clinical context
+            effective_kb_k = 2                        # minimal KB for clinical context
         elif query_type == "medical":
             effective_report_k = 2                    # minimal report
             effective_kb_k = kb_k                     # full KB
         else:  # "both"
             effective_report_k = max(report_k, 8)    # strong report presence
-            effective_kb_k = max(kb_k, 15)            # over-retrieve KB for cross-encoder
+            effective_kb_k = min(kb_k, 10)            # moderate KB for cross-encoder
 
         # ── Pre-retrieval transforms ─────────────────────────────────────
         query_variants: list[str] = [search_query]
@@ -339,40 +339,15 @@ class DualRetriever:
                 "falling back to top-%d raw chunks", MIN_CHUNKS_FOR_LLM,
             )
 
-        # ── Dynamic chunk selection based on query type ─────────────────
-        MAX_TOTAL = 8
-        if query_type == "patient":
-            max_report, max_kb = 5, 3
-        elif query_type == "medical":
-            max_report, max_kb = 2, 6
-        else:  # "both"
-            max_report, max_kb = 4, 4
-
+        # ── Smart chunk selection: fixed 5 report + 3 KB ────────────────
         report_part = [c for c in fused if c.source_type == "report"]
         kb_part = [c for c in fused if c.source_type != "report"]
 
         report_part.sort(key=lambda c: -c.similarity)
         kb_part.sort(key=lambda c: -c.similarity)
 
-        # Keep top chunks per type, but guarantee at least 2 report chunks
-        # when a report is loaded (even if similarity is low)
-        MIN_REPORT = 2 if report_part else 0
-        report_part = report_part[:max(max_report, MIN_REPORT)]
-        kb_part = kb_part[:max_kb]
-
-        # If one type has fewer, give slack to the other
-        total = len(report_part) + len(kb_part)
-        if total < MAX_TOTAL:
-            if len(report_part) < max_report:
-                extra_kb = [c for c in fused if c.source_type != "report"
-                            and c not in kb_part]
-                extra_kb.sort(key=lambda c: -c.similarity)
-                kb_part.extend(extra_kb[:MAX_TOTAL - total])
-            elif len(kb_part) < max_kb:
-                extra_rpt = [c for c in fused if c.source_type == "report"
-                             and c not in report_part]
-                extra_rpt.sort(key=lambda c: -c.similarity)
-                report_part.extend(extra_rpt[:MAX_TOTAL - total])
+        report_part = report_part[:5]
+        kb_part = kb_part[:3]
 
         fused = report_part + kb_part
 

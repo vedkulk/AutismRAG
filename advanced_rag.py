@@ -14,9 +14,21 @@ with the unmodified input.
 """
 
 import logging
+import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, List, Optional, Tuple
+
+
+def _normalize_ce_score(score: float) -> float:
+    """Map a cross-encoder logit to [0,1] via a scaled sigmoid.
+
+    The previous linear formula (score + 10) / 20 clipped to 0 whenever
+    the raw score was <= -10, which happens often for clinical text with
+    a web-trained model. Sigmoid is smooth and never saturates to exactly 0.
+    Scale factor 3 gives good dispersion in the typical [-12, +6] range.
+    """
+    return 1.0 / (1.0 + math.exp(-float(score) / 3.0))
 
 if TYPE_CHECKING:
     from llm_engine import LLMEngine
@@ -149,7 +161,7 @@ class CrossEncoderReranker:
         report_kept = 0
         for chunk, score in scored[:top_k]:
             # Normalize cross-encoder logit to [0,1] for display
-            chunk.similarity = max(0.0, min(1.0, (float(score) + 10) / 20))
+            chunk.similarity = _normalize_ce_score(score)
             result.append(chunk)
 
         # Ensure at least 2 report chunks survive reranking
@@ -157,7 +169,7 @@ class CrossEncoderReranker:
             report_in_result = {c.text for c in result if c.source_type == "report"}
             for chunk, score in scored:
                 if chunk.source_type == "report" and chunk.text not in report_in_result:
-                    chunk.similarity = max(0.0, min(1.0, (float(score) + 10) / 20))
+                    chunk.similarity = _normalize_ce_score(score)
                     result.append(chunk)
                     report_in_result.add(chunk.text)
                     if len([c for c in result if c.source_type == "report"]) >= 2:

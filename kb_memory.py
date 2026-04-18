@@ -60,10 +60,20 @@ class InMemoryKB:
         data_dir: str = "./data/kb_pdfs",
         embedder: Optional[OllamaEmbedder] = None,
         cache_dir: str = "./data/kb_cache",
+        chunk_size: int = 800,
+        chunk_overlap: int = 100,
+        min_chunk_size: int = 50,
+        retrieval_type: str = "similarity",
+        mmr_lambda: float = 0.5,
     ) -> None:
         self.data_dir = data_dir
         self._embedder = embedder or OllamaEmbedder()
         self._cache_dir = cache_dir
+        self._chunk_size = chunk_size
+        self._chunk_overlap = chunk_overlap
+        self._min_chunk_size = min_chunk_size
+        self._retrieval_type = retrieval_type.lower()
+        self._mmr_lambda = float(mmr_lambda)
         self._entries: List[KBEntry] = []
         self._bm25: Optional[BM25Okapi] = None
         self._tokenized_corpus: List[List[str]] = []
@@ -93,14 +103,14 @@ class InMemoryKB:
                 logger.info("KB source docs changed, cache invalidated")
                 return False
             # Check if chunking params changed
-            from phase1.chunker import chunk_document
-            import inspect
-            sig = inspect.signature(chunk_document)
-            chunk_size = sig.parameters["chunk_size"].default
-            chunk_overlap = sig.parameters["chunk_overlap"].default
-            if (meta.get("chunk_size") != chunk_size or
-                    meta.get("chunk_overlap") != chunk_overlap):
-                logger.info("Chunking params changed, cache invalidated")
+            if (meta.get("chunk_size") != self._chunk_size or
+                    meta.get("chunk_overlap") != self._chunk_overlap or
+                    meta.get("min_chunk_size") != self._min_chunk_size):
+                logger.info(
+                    "Chunking params changed (cached %s/%s/%s vs %s/%s/%s), cache invalidated",
+                    meta.get("chunk_size"), meta.get("chunk_overlap"), meta.get("min_chunk_size"),
+                    self._chunk_size, self._chunk_overlap, self._min_chunk_size,
+                )
                 return False
 
             data = np.load(cache_path, allow_pickle=True)
@@ -128,14 +138,12 @@ class InMemoryKB:
                 metadatas=np.array(metadatas, dtype=object),
                 embeddings=np.array(embeddings, dtype=np.float32),
             )
-            from phase1.chunker import chunk_document
-            import inspect
-            sig = inspect.signature(chunk_document)
             meta = {
                 "dir_hash": _compute_dir_hash(self.data_dir),
                 "num_entries": len(texts),
-                "chunk_size": sig.parameters["chunk_size"].default,
-                "chunk_overlap": sig.parameters["chunk_overlap"].default,
+                "chunk_size": self._chunk_size,
+                "chunk_overlap": self._chunk_overlap,
+                "min_chunk_size": self._min_chunk_size,
             }
             with open(self._meta_cache_path(), "w") as f:
                 json.dump(meta, f)
@@ -164,7 +172,17 @@ class InMemoryKB:
 
         # Parse + chunk + embed from scratch
         docs: List[ParsedDocument] = extract_documents_from_dir(self.data_dir)
-        chunks: List[TextChunk] = chunk_documents(docs)
+        chunks: List[TextChunk] = chunk_documents(
+            docs,
+            chunk_size=self._chunk_size,
+            chunk_overlap=self._chunk_overlap,
+            min_chunk_size=self._min_chunk_size,
+        )
+        logger.info(
+            "Chunked %d docs → %d chunks (size=%d, overlap=%d, min=%d)",
+            len(docs), len(chunks), self._chunk_size,
+            self._chunk_overlap, self._min_chunk_size,
+        )
         texts = [c.text for c in chunks]
         metadatas = [c.metadata for c in chunks]
         embeddings = self._embedder.embed_texts(texts)
@@ -225,6 +243,58 @@ class InMemoryKB:
         fused = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
         return fused[:k]
 
+    def _mmr_rerank(
+        self,
+        q_vec: np.ndarray,
+        candidates: List[tuple[int, float]],
+        k: int,
+    ) -> List[tuple[int, float]]:
+        """Maximal Marginal Relevance re-rank over candidate (idx, score) pairs.
+
+        Score formula (standard MMR):
+            score(c) = λ·sim(q, c) − (1 − λ)·max sim(c, c_selected)
+
+        mmr_lambda convention matches config.ini comment:
+            0 → max relevance, 1 → max diversity.
+        So the effective λ for the relevance term is (1 − mmr_lambda).
+        """
+        if not candidates:
+            return []
+
+        relevance_weight = 1.0 - self._mmr_lambda
+        diversity_weight = self._mmr_lambda
+
+        q_norm = np.linalg.norm(q_vec) + 1e-8
+        cand_idxs = [idx for idx, _ in candidates]
+        cand_vecs = np.stack([self._entries[i].embedding for i in cand_idxs])
+        cand_norms = np.linalg.norm(cand_vecs, axis=1) + 1e-8
+        q_sims = (cand_vecs @ q_vec) / (cand_norms * q_norm)
+
+        selected: List[int] = []  # positions within cand_idxs
+        remaining = set(range(len(cand_idxs)))
+        pairwise_max = np.full(len(cand_idxs), -np.inf, dtype=np.float32)
+
+        k = min(k, len(cand_idxs))
+        while len(selected) < k and remaining:
+            best_pos = -1
+            best_score = -np.inf
+            for pos in remaining:
+                div_penalty = 0.0 if not selected else float(pairwise_max[pos])
+                mmr_score = relevance_weight * float(q_sims[pos]) - diversity_weight * div_penalty
+                if mmr_score > best_score:
+                    best_score = mmr_score
+                    best_pos = pos
+            selected.append(best_pos)
+            remaining.remove(best_pos)
+
+            if remaining:
+                new_vec = cand_vecs[best_pos]
+                new_norm = cand_norms[best_pos]
+                sims_to_new = (cand_vecs @ new_vec) / (cand_norms * new_norm)
+                pairwise_max = np.maximum(pairwise_max, sims_to_new)
+
+        return [(cand_idxs[p], float(q_sims[p])) for p in selected]
+
     def similarity_search(self, query: str, k: int = 6) -> List[Dict[str, Any]]:
         """
         Hybrid search: dense (cosine) + sparse (BM25) with RRF fusion.
@@ -241,14 +311,25 @@ class InMemoryKB:
         dense_results = self._dense_search(q_vec, dense_k)
         bm25_results = self._bm25_search(query, dense_k)
 
-        # Fuse with RRF
-        fused = self._rrf_fuse(dense_results, bm25_results, k)
+        # Fuse with RRF — for MMR mode, keep a larger candidate pool so the
+        # diversity re-rank has something to work with.
+        fuse_k = min(max(k * 3, 30), len(self._entries)) if self._retrieval_type == "mmr" else k
+        fused = self._rrf_fuse(dense_results, bm25_results, fuse_k)
 
-        # Build dense similarity lookup for output
         dense_sim_map = {idx: sim for idx, sim in dense_results}
 
+        if self._retrieval_type == "mmr":
+            reranked = self._mmr_rerank(q_vec, fused, k)
+            logger.info(
+                "MMR rerank: %d candidates → %d (λ=%.2f)",
+                len(fused), len(reranked), self._mmr_lambda,
+            )
+            fused_for_output = [(idx, dense_sim_map.get(idx, 0.0)) for idx, _ in reranked]
+        else:
+            fused_for_output = [(idx, score) for idx, score in fused[:k]]
+
         results: List[Dict[str, Any]] = []
-        for rank, (idx, rrf_score) in enumerate(fused, start=1):
+        for rank, (idx, fused_score) in enumerate(fused_for_output, start=1):
             entry = self._entries[idx]
             sim = dense_sim_map.get(idx, 0.0)
             results.append(
@@ -257,7 +338,7 @@ class InMemoryKB:
                     "metadata": entry.metadata,
                     "distance": 1 - sim,
                     "similarity": round(sim, 4),
-                    "rrf_score": round(rrf_score, 6),
+                    "rrf_score": round(fused_score, 6),
                     "rank": rank,
                 }
             )

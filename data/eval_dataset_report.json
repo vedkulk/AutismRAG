@@ -5,11 +5,6 @@
     "report": "dummy_autism_screening_report.pdf"
   },
   {
-    "question": "What screening tools would be appropriate for this child given their age and the observed behaviors?",
-    "ground_truth": "For this child (age 3 years 8 months), the M-CHAT-R/F (Modified Checklist for Autism in Toddlers, Revised with Follow-Up) is a recommended screening tool. Given the specific concerns documented in the report including echolalia, limited eye contact, repetitive behaviors, and social interaction difficulties, referral for a comprehensive diagnostic evaluation including the ADOS-2 (Autism Diagnostic Observation Schedule) would be appropriate. Screening should include inquiries about the core symptoms of ASD including social relatedness and repetitive or unusual behaviors.",
-    "report": "dummy_autism_screening_report.pdf"
-  },
-  {
     "question": "How do the repetitive behaviors described in this report align with the DSM-5 diagnostic criteria for ASD?",
     "ground_truth": "The report documents hand flapping and lining up toys during playtime, as well as distress when daily routines change unexpectedly and a preference for predictable schedules. These observations align with DSM-5 Criterion B for ASD, which requires restricted, repetitive patterns of behavior, interests, or activities. Hand flapping corresponds to stereotyped or repetitive motor movements (B1). Lining up toys also falls under stereotyped behaviors (B1). Distress with routine changes and preference for predictable schedules corresponds to insistence on sameness, inflexible adherence to routines (B2). This child shows evidence of at least 2 of the 4 Criterion B manifestations.",
     "report": "dummy_autism_screening_report.pdf"
@@ -21,22 +16,12 @@
   },
   {
     "question": "What interventions would be recommended for this child based on the observed communication and social delays?",
-    "ground_truth": "Based on the report observations for this child, interventions targeting communication and social interaction are recommended. For the communication delays (single words, echolalia, limited initiation), speech and language therapy targeting expressive language development and functional communication is indicated. For the social interaction difficulties (limited group play, not responding to name, limited engagement with unfamiliar individuals), social communication interventions are recommended. Behavioral interventions such as Applied Behavior Analysis (ABA) can address both communication and social interaction goals. Early intervention is associated with better outcomes across cognitive, language, and adaptive functioning domains.",
-    "report": "dummy_autism_screening_report.pdf"
-  },
-  {
-    "question": "Does the child's social interaction pattern suggest ASD or could it indicate social communication disorder instead?",
-    "ground_truth": "The report describes limited interest in group play, preference for playing alone, not responding to name, and limited social responses with unfamiliar individuals. These observations reflect deficits in social communication and social interaction (DSM-5 Criterion A). However, the report also documents restricted, repetitive behaviors including hand flapping, lining up toys, and insistence on sameness (DSM-5 Criterion B). The distinction between ASD and Social (Pragmatic) Communication Disorder (SCD) is that SCD shares the social communication deficits but lacks the restricted, repetitive patterns of behavior. Since this child demonstrates both social communication difficulties AND repetitive/restricted behaviors, the presentation is more consistent with ASD than SCD.",
+    "ground_truth": "The report's communication findings (single words, echolalia, limited initiation) support speech and language therapy targeting expressive language and functional communication. The social findings (limited group play, not responding to name, limited engagement with unfamiliar individuals) support social communication intervention. Applied Behavior Analysis (ABA) is an evidence-based behavioral intervention addressing both communication and social-interaction goals. Early intervention is associated with better long-term outcomes.",
     "report": "dummy_autism_screening_report.pdf"
   },
   {
     "question": "What co-occurring conditions should be assessed for this child given the behaviors documented in the report?",
     "ground_truth": "Given the observations in the report, several co-occurring conditions should be assessed. The sensory sensitivities described (loud noise distress, texture avoidance in food and clothing) may benefit from occupational therapy assessment. Language delay (single words, rarely full sentences at 3 years 8 months) warrants assessment for language disorder. Attention-deficit/hyperactivity disorder (ADHD) commonly co-occurs with ASD and should be evaluated. The food texture avoidance may be associated with feeding difficulties. Anxiety may be contributing to the distress with routine changes. A comprehensive developmental evaluation should assess these potential co-occurring conditions alongside ASD screening.",
-    "report": "dummy_autism_screening_report.pdf"
-  },
-  {
-    "question": "What are the communication abilities of child ASD-TEST-001 and how do they compare to typical development at this age?",
-    "ground_truth": "Child ASD-TEST-001 is 3 years 8 months old. The report states the child occasionally uses single words but rarely forms full sentences, which represents a significant language delay for this age. Typically developing children at this age use multi-word sentences and engage in conversations. The presence of echolalia is a communication pattern often seen in ASD. Inconsistent eye contact and difficulty initiating conversations with peers indicate deficits in social communication. These communication patterns deviate from typical developmental milestones and warrant further assessment.",
     "report": "dummy_autism_screening_report.pdf"
   },
   {

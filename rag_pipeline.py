@@ -11,6 +11,8 @@ It lazily initialises:
   - LLMEngine
 """
 
+import configparser
+import logging
 from dataclasses import dataclass
 from typing import Optional, Iterable
 from pathlib import Path
@@ -22,9 +24,12 @@ from llm_engine import LLMEngine
 from kb_memory import InMemoryKB
 from advanced_rag import AdvancedRAGConfig, AdvancedRAGOrchestrator
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class RAGConfig:
+    kb_data_dir: str = "./data/kb_pdfs"
     kb_persist_dir: str = "./data/chroma_kb"
     kb_collection_name: str = "autism_kb_medical_guidelines"
     kb_top_k: int = 20
@@ -32,6 +37,13 @@ class RAGConfig:
     ollama_base_url: str = "http://localhost:11434"
     llm_model: str = "llama3.1"
     embed_model: str = "nomic-embed-text"
+    # Chunking
+    chunk_size: int = 800
+    chunk_overlap: int = 100
+    min_chunk_size: int = 50
+    # Retrieval strategy
+    retrieval_type: str = "similarity"  # "similarity" | "mmr"
+    mmr_lambda: float = 0.5
     # Phase 4 — Advanced RAG
     hyde_enabled: bool = False
     query_rewriting_enabled: bool = False
@@ -40,6 +52,38 @@ class RAGConfig:
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     rerank_top_k: int = 15
     compression_top_k: int = 5
+
+    @classmethod
+    def from_ini(cls, path: str = "config.ini") -> "RAGConfig":
+        """Build a RAGConfig from config.ini. Missing values fall back to defaults."""
+        cfg = configparser.ConfigParser()
+        read_ok = cfg.read(path)
+        if not read_ok:
+            logger.warning("config.ini not found at %s, using RAGConfig defaults", path)
+            return cls()
+
+        c = cls()
+        c.ollama_base_url     = cfg.get("ollama",   "base_url",    fallback=c.ollama_base_url)
+        c.llm_model           = cfg.get("ollama",   "llm_model",   fallback=c.llm_model)
+        c.embed_model         = cfg.get("ollama",   "embed_model", fallback=c.embed_model)
+        c.kb_data_dir         = cfg.get("paths",    "kb_data_dir", fallback=c.kb_data_dir)
+        c.kb_persist_dir      = cfg.get("paths",    "chroma_db_dir", fallback=c.kb_persist_dir)
+        c.chunk_size          = cfg.getint("chunking", "chunk_size",     fallback=c.chunk_size)
+        c.chunk_overlap       = cfg.getint("chunking", "chunk_overlap",  fallback=c.chunk_overlap)
+        c.min_chunk_size      = cfg.getint("chunking", "min_chunk_size", fallback=c.min_chunk_size)
+        c.kb_top_k            = cfg.getint("retrieval", "kb_top_k",     fallback=c.kb_top_k)
+        c.report_top_k        = cfg.getint("retrieval", "report_top_k", fallback=c.report_top_k)
+        c.retrieval_type      = cfg.get("retrieval", "retrieval_type",  fallback=c.retrieval_type)
+        c.mmr_lambda          = cfg.getfloat("retrieval", "mmr_lambda", fallback=c.mmr_lambda)
+        c.hyde_enabled            = cfg.getboolean("advanced_rag", "hyde_enabled",            fallback=c.hyde_enabled)
+        c.query_rewriting_enabled = cfg.getboolean("advanced_rag", "query_rewriting_enabled", fallback=c.query_rewriting_enabled)
+        c.cross_encoder_enabled   = cfg.getboolean("advanced_rag", "cross_encoder_enabled",   fallback=c.cross_encoder_enabled)
+        c.compression_enabled     = cfg.getboolean("advanced_rag", "compression_enabled",     fallback=c.compression_enabled)
+        c.cross_encoder_model     = cfg.get("advanced_rag", "cross_encoder_model", fallback=c.cross_encoder_model)
+        c.rerank_top_k            = cfg.getint("advanced_rag", "rerank_top_k",      fallback=c.rerank_top_k)
+        c.compression_top_k       = cfg.getint("advanced_rag", "compression_top_k", fallback=c.compression_top_k)
+        c.kb_collection_name  = cfg.get("chroma", "kb_collection_name", fallback=c.kb_collection_name)
+        return c
 
 
 class RAGPipeline:
@@ -50,8 +94,13 @@ class RAGPipeline:
             base_url=self.config.ollama_base_url,
         )
         self._kb_store = InMemoryKB(
-            data_dir="./data/kb_pdfs",
+            data_dir=self.config.kb_data_dir,
             embedder=self._embedder,
+            chunk_size=self.config.chunk_size,
+            chunk_overlap=self.config.chunk_overlap,
+            min_chunk_size=self.config.min_chunk_size,
+            retrieval_type=self.config.retrieval_type,
+            mmr_lambda=self.config.mmr_lambda,
         )
         self._report_store = ReportStore(embedder=self._embedder)
         self._llm = LLMEngine(

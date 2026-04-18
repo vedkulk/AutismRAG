@@ -604,12 +604,7 @@ def init_state():
 
 def get_pipeline() -> RAGPipeline:
     if st.session_state["rag_pipeline"] is None:
-        config = RAGConfig(
-            hyde_enabled=False,
-            query_rewriting_enabled=False,
-            cross_encoder_enabled=True,
-            compression_enabled=False,
-        )
+        config = RAGConfig.from_ini("config.ini")
         st.session_state["rag_pipeline"] = RAGPipeline(config=config)
     return st.session_state["rag_pipeline"]
 
@@ -748,7 +743,16 @@ def render_message(msg: dict, is_streaming: bool = False):
             avg_sim  = sum(sims) / len(sims) if sims else 0
             top_sim  = max(sims) if sims else 0
             n_chunks = len(sources)
-            grounding = "High" if avg_sim > 0.5 else ("Medium" if avg_sim > 0.3 else "Low")
+            n_report = len(report_chunks)
+            # Quality label: based on whether we retrieved the expected mix.
+            # Cross-encoder logits (normalized via sigmoid) are not comparable
+            # to cosine similarity, so we judge by chunk coverage instead.
+            if n_chunks >= 7 and n_report >= 3:
+                grounding = "High"
+            elif n_chunks >= 4 and n_report >= 1:
+                grounding = "Medium"
+            else:
+                grounding = "Low"
             g_color = "#4caf50" if grounding == "High" else ("#ff9800" if grounding == "Medium" else "#f44336")
             st.markdown(
                 f'<div style="text-align:center;padding:6px 0;margin:4px 0;'

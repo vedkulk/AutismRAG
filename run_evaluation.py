@@ -58,6 +58,11 @@ def parse_args() -> argparse.Namespace:
         help="Enable all Phase 4 advanced RAG techniques",
     )
     p.add_argument(
+        "--cross-encoder",
+        action="store_true",
+        help="Enable only cross-encoder re-ranking (matches app.py default)",
+    )
+    p.add_argument(
         "--limit",
         type=int,
         default=None,
@@ -231,18 +236,33 @@ def save_report(report: EvalReport, output_dir: str) -> str:
 def main() -> None:
     args = parse_args()
 
-    # Build config
-    config = RAGConfig()
-    config_snapshot = {"llm_model": config.llm_model, "embed_model": config.embed_model}
+    # Build config — load from config.ini so file-level edits take effect,
+    # then let CLI flags override the advanced-RAG toggles.
+    config = RAGConfig.from_ini("config.ini")
+    config_snapshot = {
+        "llm_model": config.llm_model,
+        "embed_model": config.embed_model,
+        "chunk_size": config.chunk_size,
+        "chunk_overlap": config.chunk_overlap,
+        "kb_top_k": config.kb_top_k,
+        "retrieval_type": config.retrieval_type,
+        "mmr_lambda": config.mmr_lambda,
+    }
 
     if args.advanced_rag:
         config.hyde_enabled = True
         config.query_rewriting_enabled = True
         config.cross_encoder_enabled = True
         config.compression_enabled = True
-        config_snapshot["advanced_rag"] = "all enabled"
+        config_snapshot["advanced_rag"] = "all enabled (CLI override)"
+    elif args.cross_encoder:
+        config.cross_encoder_enabled = True
+        config_snapshot["advanced_rag"] = "cross-encoder only (CLI override)"
     else:
-        config_snapshot["advanced_rag"] = "disabled"
+        config_snapshot["advanced_rag"] = (
+            f"hyde={config.hyde_enabled}, qr={config.query_rewriting_enabled}, "
+            f"ce={config.cross_encoder_enabled}, comp={config.compression_enabled}"
+        )
 
     # Initialise pipeline
     logger.info("Initialising RAG pipeline...")
