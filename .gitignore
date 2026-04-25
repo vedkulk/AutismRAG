@@ -33,3 +33,30 @@ data/chroma_kb/
 data/session_chroma/
 data/kb_cache/
 data/session_reports/
+
+# Legacy DFS CLI artifacts (the integrated RAG flow uses system tempdirs,
+# but the standalone CLIs in dfs/ still write to these on a per-run basis)
+dfs/storage/
+dfs/metadata/
+*.transfer.bin
+
+# DFS CLI scratch — sample inputs and orphan metadata that shouldn't ship
+dfs/data*.txt
+dfs/metadata.json
+
+# Defense-in-depth: if TMPDIR ever points inside the project tree, the
+# ephemeral DFS / Chroma session dirs would land here. Keep them ignored.
+rag_dfs_*/
+rag_chroma_*/
+
+# IDE / editor
+.idea/
+.vscode/
+
+# Streamlit local secrets (not used today, but the file would carry them)
+.streamlit/secrets.toml
+
+# Python build artifacts
+build/
+dist/
+*.egg-info/

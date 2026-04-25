@@ -1,6 +1,25 @@
+import logging
+
 import streamlit as st
 
 from rag_pipeline import RAGPipeline, RAGConfig
+from dfs import sweep_orphans
+
+
+# ── Logging policy ─────────────────────────────────────────────────────────
+# Patient data must never persist on disk. Strip any FileHandler that some
+# library may have attached and route everything to stderr only.
+def _enforce_in_memory_logging() -> None:
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        if isinstance(h, logging.FileHandler):
+            root.removeHandler(h)
+    if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
+        root.addHandler(logging.StreamHandler())
+    root.setLevel(logging.INFO)
+
+
+_enforce_in_memory_logging()
 
 
 # ── Must be the very first Streamlit call ──────────────────────────────────
@@ -145,10 +164,21 @@ def inject_css():
     }
 
     /* ── Chat container ───────────────────────────────── */
+    /* Constrain the entire main column so every Streamlit element (static
+       msg-row, streaming placeholder, expanders, welcome) shares the same
+       width/padding. Eliminates the "left margin jog" the streaming bubble
+       used to do when only it was wrapped in .chat-wrap. */
+    section.main > div.block-container,
+    [data-testid="stMain"] [data-testid="stMainBlockContainer"],
+    .main .block-container {
+        max-width: 820px !important;
+        padding: 1.25rem 1.5rem 6rem !important;
+    }
     .chat-wrap {
-        max-width: 820px;
-        margin: 0 auto;
-        padding: 1.25rem 1.5rem 6rem;
+        /* Legacy class — layout now lives on the block container. */
+        padding: 0;
+        margin: 0;
+        max-width: none;
     }
 
     /* ── Welcome screen ───────────────────────────────── */
@@ -252,12 +282,19 @@ def inject_css():
         font-size: 0.9rem;
         line-height: 1.75;
     }
+    /* AI answer is fixed width and matches the sources/retrieval-meta width
+       so the column reads as one stack. User bubble keeps its shrink-to-fit
+       right-aligned behavior. */
     .bubble.ai {
         background: #ffffff;
         border: 1px solid #e2e6ea;
         border-top-left-radius: 4px;
         color: #2a3540;
         box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        flex: 1 1 auto;
+        width: calc(100% - 34px - 0.9rem);
+        max-width: calc(100% - 34px - 0.9rem);
+        box-sizing: border-box;
     }
     .bubble.user {
         background: #1d6fa4;
@@ -311,15 +348,12 @@ def inject_css():
     .msg-row.user .msg-meta { text-align: right; }
 
     /* ── Sources expander ─────────────────────────────── */
-    /* Indent to align with AI bubble (avatar 34px + gap 0.9rem ≈ 48px) */
+    /* Width/margins are owned by the later rule near the bottom of the
+       stylesheet so the bubble, sources bar, and retrieval-meta share one
+       fixed width. Keep only the visual properties here that aren't about
+       sizing. */
     [data-testid="stExpander"] {
-        background: #f8f9fa !important;
-        border: 1px solid #e2e6ea !important;
-        border-radius: 8px !important;
         overflow: hidden !important;
-        margin-left: 48px !important;
-        /* Match bubble max-width so right edge lines up */
-        max-width: calc(86% - 48px) !important;
     }
     [data-testid="stExpander"] details summary {
         font-family: 'IBM Plex Mono', monospace;
@@ -369,10 +403,18 @@ def inject_css():
     }
 
     /* ── Chat input area ──────────────────────────────── */
-    /* Remove the dark strip at the bottom */
-    .stChatInput,
+    /* Streamlit always emits an empty [data-testid="stBottom"] container,
+       even when no chat_input is mounted. Keep it transparent so an empty
+       page never shows a leftover bar at the bottom. */
     [data-testid="stBottom"],
     [data-testid="stBottom"] > div {
+        background: transparent !important;
+        border-top: none !important;
+        box-shadow: none !important;
+    }
+    /* Bar styling moves onto the chat input itself — only renders when
+       st.chat_input(...) was actually called this run. */
+    [data-testid="stChatInput"] {
         background: #f5f6f7 !important;
         border-top: 1px solid #e2e6ea !important;
     }
@@ -381,6 +423,8 @@ def inject_css():
         display: flex !important;
         align-items: center !important;
         gap: 8px !important;
+        background: transparent !important;
+        border: none !important;
     }
     .stChatInput textarea,
     [data-testid="stChatInput"] textarea {
@@ -404,6 +448,16 @@ def inject_css():
     }
     [data-testid="stChatInput"] textarea::placeholder {
         color: #a0b0c0 !important;
+    }
+    /* Kill the inner baseweb wrapper border that was bleeding through as
+       a dark outline around the chat input. */
+    [data-testid="stChatInput"] [data-baseweb="textarea"],
+    [data-testid="stChatInput"] [data-baseweb="textarea"] > div,
+    [data-testid="stChatInput"] [data-baseweb="base-input"],
+    [data-testid="stChatInput"] [data-baseweb="base-input"] > div {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
     }
     /* Submit button — fixed square, vertically centred beside textarea */
     [data-testid="stChatInput"] button {
@@ -548,6 +602,62 @@ def inject_css():
         30%            { transform: translateY(-6px); background: #1d6fa4; }
     }
 
+    /* ── Sources expander ─────────────────────────────── */
+    /* Force light theme on the expander; some Streamlit builds default to
+       a dark surface when the panel is open. Also align horizontally with
+       the AI bubble: left edge at avatar+gap (34px + 0.9rem ≈ 48px),
+       right edge near the bubble's. */
+    /* Sources bar and retrieval-meta share the AI bubble's exact fixed
+       width: column-content width minus avatar(34px) + gap(0.9rem). All
+       three line up as one column. */
+    [data-testid="stExpander"] {
+        background: #ffffff !important;
+        border: 1px solid #e2e6ea !important;
+        border-radius: 8px !important;
+        margin-left: calc(34px + 0.9rem) !important;
+        margin-right: 0 !important;
+        width: calc(100% - 34px - 0.9rem) !important;
+        max-width: calc(100% - 34px - 0.9rem) !important;
+        box-sizing: border-box !important;
+        margin-top: -0.75rem !important;
+        margin-bottom: 0.4rem !important;
+    }
+    .retrieval-meta {
+        margin-left: calc(34px + 0.9rem);
+        margin-right: 0;
+        width: calc(100% - 34px - 0.9rem);
+        max-width: calc(100% - 34px - 0.9rem);
+        box-sizing: border-box;
+        padding: 4px 0 0;
+        margin-bottom: 1.25rem;
+        font-size: 0.78rem;
+        color: #9e9e9e;
+        letter-spacing: 0.3px;
+        text-align: left;
+    }
+    [data-testid="stExpander"] details,
+    [data-testid="stExpander"] details[open],
+    [data-testid="stExpander"] summary,
+    [data-testid="stExpander"] [data-testid="stExpanderDetails"],
+    [data-testid="stExpander"] [data-testid="stExpanderToggleIcon"] {
+        background: #ffffff !important;
+        color: #1a2332 !important;
+    }
+    [data-testid="stExpander"] summary {
+        font-family: 'IBM Plex Sans', sans-serif !important;
+        font-size: 0.82rem !important;
+        font-weight: 500 !important;
+        color: #3a4a5a !important;
+        padding: 0.6rem 0.85rem !important;
+        border-radius: 8px !important;
+    }
+    [data-testid="stExpander"] summary:hover {
+        background: #f5f6f7 !important;
+    }
+    [data-testid="stExpander"] [data-testid="stExpanderDetails"] {
+        padding: 0 0.85rem 0.75rem !important;
+    }
+
     /* ── Disclaimer ───────────────────────────────────── */
     .disclaimer {
         font-family: 'IBM Plex Mono', monospace;
@@ -596,10 +706,19 @@ def init_state():
         "messages":       [],   # list of {role, content, sources}
         "report_loaded":  False,
         "report_meta":    None,
+        "orphans_swept":  False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
+    # Wipe any tempdirs left by prior crashed sessions — runs once per app boot.
+    if not st.session_state["orphans_swept"]:
+        try:
+            sweep_orphans()
+        except Exception:
+            pass
+        st.session_state["orphans_swept"] = True
 
 
 def get_pipeline() -> RAGPipeline:
@@ -607,6 +726,22 @@ def get_pipeline() -> RAGPipeline:
         config = RAGConfig.from_ini("config.ini")
         st.session_state["rag_pipeline"] = RAGPipeline(config=config)
     return st.session_state["rag_pipeline"]
+
+
+def end_session() -> None:
+    """Wipe everything patient-related. Called by the End Session button and
+    implicitly when the user closes the tab (best effort, via atexit hooks
+    inside the pipeline)."""
+    pipeline = st.session_state.get("rag_pipeline")
+    if pipeline is not None:
+        try:
+            pipeline.end_session()
+        except Exception:
+            pass
+    st.session_state["rag_pipeline"] = None
+    st.session_state["messages"] = []
+    st.session_state["report_loaded"] = False
+    st.session_state["report_meta"] = None
 
 
 def is_clearly_clinical(question: str) -> bool:
@@ -673,15 +808,20 @@ def render_sidebar():
             st.markdown('<span class="sb-label">Conversation</span>', unsafe_allow_html=True)
             if st.button("Clear chat", type="secondary", use_container_width=True):
                 st.session_state["messages"] = []
-                pipeline = get_pipeline()
-                if hasattr(pipeline, "clear_history"):
-                    pipeline.clear_history()
+                st.rerun()
+
+        # End session is only meaningful once a report is loaded.
+        if st.session_state["report_loaded"]:
+            st.markdown('<span class="sb-label">Session</span>', unsafe_allow_html=True)
+            if st.button("End session", type="secondary", use_container_width=True):
+                end_session()
                 st.rerun()
 
         st.markdown("""
         <div class="sb-info">
-            Report is stored in-memory for this session only.<br>
-            Closing the tab clears all patient data.
+            Reports are encrypted, fragmented, and held only in a system tempdir
+            for the duration of this session. Loading a new report, ending the
+            session, or closing the tab wipes all patient data.
         </div>
         <div class="disclaimer">
             For educational &amp; decision-support use only.<br>
@@ -754,18 +894,8 @@ def render_message(msg: dict, is_streaming: bool = False):
             else:
                 grounding = "Low"
             g_color = "#4caf50" if grounding == "High" else ("#ff9800" if grounding == "Medium" else "#f44336")
-            st.markdown(
-                f'<div style="text-align:center;padding:6px 0;margin:4px 0;'
-                f'font-size:0.82rem;color:#9e9e9e;letter-spacing:0.3px;">'
-                f'Retrieval quality: <span style="color:{g_color};font-weight:600;">{grounding}</span>'
-                f' &middot; {n_chunks} chunks'
-                f' &middot; avg sim {avg_sim:.3f}'
-                f' &middot; top sim {top_sim:.3f}'
-                f' &middot; {len(report_chunks)} report + {len(kb_chunks)} KB'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
 
+            # Sources expander first; retrieval-quality strip below it.
             label = f"Sources \u2014 {len(report_chunks)} from report \u00b7 {len(kb_chunks)} from knowledge base"
             with st.expander(label, expanded=False):
                 for chunk in sources:
@@ -786,6 +916,17 @@ def render_message(msg: dict, is_streaming: bool = False):
                     </div>
                     """, unsafe_allow_html=True)
 
+            st.markdown(
+                f'<div class="retrieval-meta">'
+                f'Retrieval quality: <span style="color:{g_color};font-weight:600;">{grounding}</span>'
+                f' &middot; {n_chunks} chunks'
+                f' &middot; avg sim {avg_sim:.3f}'
+                f' &middot; top sim {top_sim:.3f}'
+                f' &middot; {len(report_chunks)} report + {len(kb_chunks)} KB'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
 
 # ══════════════════════════════════════════════════════════════════════════
 #  MAIN
@@ -796,8 +937,17 @@ def main():
     init_state()
     render_sidebar()
 
-    # ── Welcome screen (no messages yet) ──────────────────────────────────
-    if not st.session_state["messages"]:
+    # Capture the chat input EARLY so we know whether a question is in flight
+    # before deciding to render the welcome screen. The widget is only
+    # mounted when a report is loaded — no disabled-but-visible input box.
+    question = None
+    if st.session_state["report_loaded"]:
+        question = st.chat_input("Ask a clinical question about this patient…")
+
+    # ── Welcome screen ─────────────────────────────────────────────────────
+    # Hidden the moment messages exist OR a question has just been submitted,
+    # so the instructions don't flash above the streaming answer on the first turn.
+    if not st.session_state["messages"] and not question:
         st.markdown("""
         <div class="welcome">
             <div class="welcome-icon">🧠</div>
@@ -817,77 +967,49 @@ def main():
                 </div>
                 <div class="welcome-step">
                     <span class="num">03</span>
-                    Ask clinical questions — conversation continues naturally
+                    Ask clinical questions about the patient
                 </div>
             </div>
         </div>
         """, unsafe_allow_html=True)
-
-    # ── Chat input ─────────────────────────────────────────────────────────
-    question = st.chat_input(
-        "Ask a clinical question about this patient…"
-        if st.session_state["report_loaded"]
-        else "Upload and load a report first…",
-        disabled=not st.session_state["report_loaded"],
-    )
 
     # ── Handle new question ────────────────────────────────────────────────
     if question:
         pipeline = get_pipeline()
 
-        # Guardrail: only filter when NO report is loaded (pure KB mode).
-        # When a report is loaded, any question is valid — the doctor is
-        # asking about their patient.
-        if not st.session_state["report_loaded"]:
-            if not (is_clearly_clinical(question) or pipeline._llm.is_asd_question(question)):
-                st.session_state["messages"].append({"role": "user", "content": question})
-                st.session_state["messages"].append({
-                    "role": "assistant",
-                    "content": (
-                        "I'm designed to help with autism spectrum and related "
-                        "developmental clinical questions about the uploaded patient. "
-                        "This question appears unrelated, so I'm unable to assist with it."
-                    ),
-                })
-                st.rerun()
-
-        # Append user turn immediately and render it right away
+        # Append user turn and render the full conversation. No outer
+        # chat-wrap div — the main block container CSS does the centering,
+        # so the static loop and the streaming placeholder share the exact
+        # same horizontal alignment.
         st.session_state["messages"].append({"role": "user", "content": question})
-
-        # ── Render all previous messages + the new user message ───────────
-        st.markdown('<div class="chat-wrap">', unsafe_allow_html=True)
         for msg in st.session_state["messages"]:
             render_message(msg)
-        st.markdown('</div>', unsafe_allow_html=True)
 
         # ── Stream the AI response ─────────────────────────────────────────
-        stream, ctx = pipeline.ask_stream(question)
-
+        # Render the typing indicator FIRST so it appears the moment the
+        # user submits — before retrieval (which is synchronous and can take
+        # a couple of seconds with cross-encoder + compression enabled).
         answer_text = ""
         placeholder = st.empty()
-
-        # Show typing indicator immediately
         placeholder.markdown("""
-        <div class="chat-wrap" style="padding-top:0;padding-bottom:2rem;">
-            <div class="typing-row">
-                <div class="avatar ai">AI</div>
-                <div class="typing-bubble">
-                    <div class="typing-dot"></div>
-                    <div class="typing-dot"></div>
-                    <div class="typing-dot"></div>
-                </div>
+        <div class="typing-row">
+            <div class="avatar ai">AI</div>
+            <div class="typing-bubble">
+                <div class="typing-dot"></div>
+                <div class="typing-dot"></div>
+                <div class="typing-dot"></div>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
+        stream, ctx = pipeline.ask_stream(question)
+
         for token in stream:
             answer_text += token
             placeholder.markdown(f"""
-            <div class="chat-wrap" style="padding-top:0;padding-bottom:2rem;">
-                <div class="msg-row">
-                    <div class="avatar ai">AI</div>
-                    <div class="bubble ai">{md_to_html(answer_text)}<span class="cursor"></span></div>
-                </div>
+            <div class="msg-row">
+                <div class="avatar ai">AI</div>
+                <div class="bubble ai">{md_to_html(answer_text)}<span class="cursor"></span></div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -899,12 +1021,10 @@ def main():
         })
         st.rerun()
 
-    # ── Render existing conversation (no new input) ────────────────────────
+    # ── Render existing conversation (no new input this run) ───────────────
     elif st.session_state["messages"]:
-        st.markdown('<div class="chat-wrap">', unsafe_allow_html=True)
         for msg in st.session_state["messages"]:
             render_message(msg)
-        st.markdown('</div>', unsafe_allow_html=True)
 
 
 if __name__ == "__main__":

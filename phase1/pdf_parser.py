@@ -14,6 +14,7 @@ Usage:
 import os
 import re
 import logging
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
@@ -102,6 +103,83 @@ def _parse_with_pypdf2(pdf_path: str) -> tuple[str, int]:
             pages_text.append(text)
 
     return "\n\n".join(pages_text), num_pages
+
+
+def _parse_with_pdfplumber_bytes(data: bytes) -> tuple[str, int]:
+    import pdfplumber
+
+    pages_text = []
+    with pdfplumber.open(BytesIO(data)) as pdf:
+        num_pages = len(pdf.pages)
+        for page in pdf.pages:
+            page_text = page.extract_text(x_tolerance=3, y_tolerance=3)
+            if page_text:
+                pages_text.append(page_text)
+
+    return "\n\n".join(pages_text), num_pages
+
+
+def _parse_with_pypdf2_bytes(data: bytes) -> tuple[str, int]:
+    from PyPDF2 import PdfReader
+
+    reader = PdfReader(BytesIO(data))
+    num_pages = len(reader.pages)
+    pages_text = []
+
+    for page in reader.pages:
+        text = page.extract_text()
+        if text:
+            pages_text.append(text)
+
+    return "\n\n".join(pages_text), num_pages
+
+
+def parse_pdf_bytes(data: bytes, filename: str) -> Optional[ParsedDocument]:
+    """In-memory variant of parse_pdf. Used by the ephemeral upload path so
+    no plaintext PDF ever touches disk."""
+    if not data:
+        logger.error("parse_pdf_bytes: empty payload for %s", filename)
+        return None
+
+    file_size_kb = len(data) / 1024
+    text = ""
+    num_pages = 0
+    parse_method = "unknown"
+
+    try:
+        text, num_pages = _parse_with_pdfplumber_bytes(data)
+        parse_method = "pdfplumber"
+    except Exception as e:
+        logger.warning(f"pdfplumber failed for {filename}: {e}. Trying PyPDF2...")
+        try:
+            text, num_pages = _parse_with_pypdf2_bytes(data)
+            parse_method = "pypdf2"
+        except Exception as e2:
+            logger.error(f"Both parsers failed for {filename}: {e2}")
+            return None
+
+    if len(text.strip()) < 50:
+        logger.warning(
+            f"Very little text extracted from {filename} "
+            f"({len(text)} chars) — may be a scanned PDF."
+        )
+
+    text = _clean_text(text)
+
+    return ParsedDocument(
+        source_path="<in-memory>",
+        filename=filename,
+        text=text,
+        num_pages=num_pages,
+        file_size_kb=round(file_size_kb, 2),
+        parse_method=parse_method,
+        metadata={
+            "source": "<in-memory>",
+            "filename": filename,
+            "num_pages": num_pages,
+            "file_size_kb": round(file_size_kb, 2),
+        },
+    )
 
 
 def parse_pdf(pdf_path: str) -> Optional[ParsedDocument]:

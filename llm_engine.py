@@ -61,20 +61,17 @@ class LLMEngine:
         model: str = "llama3.1",
         base_url: str = "http://localhost:11434",
         temperature: float = 0.2,
-        max_history: int = 6,
     ) -> None:
         self.model_name = model
         self.base_url = base_url
         self.temperature = temperature
-        self.max_history = max_history
         self._chat = ChatOllama(
             model=model,
             base_url=base_url,
             temperature=temperature,
         )
-        self._history: List[HumanMessage] = []
 
-        # Lightweight classifier chat head (no history, low temperature)
+        # Lightweight classifier chat head (low temperature, no history)
         self._classifier = ChatOllama(
             model=model,
             base_url=base_url,
@@ -100,6 +97,9 @@ class LLMEngine:
         return True
 
     def _build_messages(self, question: str, ctx: FusedContext) -> List[Any]:
+        # Each turn is independent — no conversation history is retained,
+        # so prior questions/answers about other patients can never bleed
+        # into a new query.
         context_block = ctx.as_prompt_block()
         user_prompt = (
             f"A clinician has asked the following question while reviewing a patient case:\n"
@@ -110,42 +110,22 @@ class LLMEngine:
             f"Summarize the relevant information from these documents to address "
             f"the clinician's question."
         )
-
-        messages: List[Any] = [SystemMessage(content=DEFAULT_SYSTEM_PROMPT)]
-        if self._history:
-            for msg in self._history[-self.max_history :]:
-                messages.append(msg)
-        messages.append(HumanMessage(content=user_prompt))
-        return messages
+        return [
+            SystemMessage(content=DEFAULT_SYSTEM_PROMPT),
+            HumanMessage(content=user_prompt),
+        ]
 
     def ask(self, question: str, ctx: FusedContext) -> str:
-        # Guard: skip LLM if context is too weak
         if not self._context_is_sufficient(ctx):
             return INSUFFICIENT_CONTEXT_MSG
-
-        messages = self._build_messages(question, ctx)
-        resp = self._chat.invoke(messages)
-
-        self._history.append(HumanMessage(content=question))
-        if len(self._history) > self.max_history:
-            self._history = self._history[-self.max_history :]
-
+        resp = self._chat.invoke(self._build_messages(question, ctx))
         return resp.content
 
     def ask_stream(self, question: str, ctx: FusedContext) -> Iterable[str]:
-        # Guard: skip LLM if context is too weak
         if not self._context_is_sufficient(ctx):
             yield INSUFFICIENT_CONTEXT_MSG
             return
-
-        messages = self._build_messages(question, ctx)
-        stream = self._chat.stream(messages)
-
-        self._history.append(HumanMessage(content=question))
-        if len(self._history) > self.max_history:
-            self._history = self._history[-self.max_history :]
-
-        for chunk in stream:
+        for chunk in self._chat.stream(self._build_messages(question, ctx)):
             if chunk.content:
                 yield chunk.content
 

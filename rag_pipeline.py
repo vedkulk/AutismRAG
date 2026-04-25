@@ -15,14 +15,15 @@ import configparser
 import logging
 from dataclasses import dataclass
 from typing import Optional, Iterable
-from pathlib import Path
 
 from phase1.embedder import OllamaEmbedder
+from phase1.pdf_parser import parse_pdf_bytes
 from report_store import ReportStore, ReportMetadata
 from dual_retriever import DualRetriever, FusedContext
 from llm_engine import LLMEngine
 from kb_memory import InMemoryKB
 from advanced_rag import AdvancedRAGConfig, AdvancedRAGOrchestrator
+from dfs import EphemeralDFSStore
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,10 @@ class RAGConfig:
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     rerank_top_k: int = 15
     compression_top_k: int = 5
+    # DFS — ephemeral encrypted+fragmented session store
+    dfs_num_fragments: int = 10
+    dfs_num_key_shares: int = 5
+    dfs_key_threshold: int = 3
 
     @classmethod
     def from_ini(cls, path: str = "config.ini") -> "RAGConfig":
@@ -83,6 +88,9 @@ class RAGConfig:
         c.rerank_top_k            = cfg.getint("advanced_rag", "rerank_top_k",      fallback=c.rerank_top_k)
         c.compression_top_k       = cfg.getint("advanced_rag", "compression_top_k", fallback=c.compression_top_k)
         c.kb_collection_name  = cfg.get("chroma", "kb_collection_name", fallback=c.kb_collection_name)
+        c.dfs_num_fragments   = cfg.getint("dfs", "num_fragments",  fallback=c.dfs_num_fragments)
+        c.dfs_num_key_shares  = cfg.getint("dfs", "num_key_shares", fallback=c.dfs_num_key_shares)
+        c.dfs_key_threshold   = cfg.getint("dfs", "key_threshold",  fallback=c.dfs_key_threshold)
         return c
 
 
@@ -106,6 +114,11 @@ class RAGPipeline:
         self._llm = LLMEngine(
             model=self.config.llm_model,
             base_url=self.config.ollama_base_url,
+        )
+        self._dfs = EphemeralDFSStore(
+            num_fragments=self.config.dfs_num_fragments,
+            num_key_shares=self.config.dfs_num_key_shares,
+            key_threshold=self.config.dfs_key_threshold,
         )
 
         # Phase 4 — Advanced RAG orchestrator
@@ -140,18 +153,48 @@ class RAGPipeline:
         return self._report_store.metadata
 
     def load_report_from_uploaded_file(self, uploaded_file) -> ReportMetadata:
-        """
-        Save the uploaded PDF to a temp path under ./data and ingest it.
-        Streamlit passes an UploadedFile which provides a file-like object.
-        """
-        reports_dir = Path("./data/session_reports")
-        reports_dir.mkdir(parents=True, exist_ok=True)
-        out_path = reports_dir / uploaded_file.name
-        with out_path.open("wb") as f:
-            f.write(uploaded_file.getbuffer())
+        """Ingest an uploaded PDF without ever writing plaintext to disk.
 
-        meta = self._report_store.load_report_from_path(str(out_path))
-        return meta
+        Flow:
+            uploaded bytes
+              → DFS.store (encrypt + fragment + scatter into tempdir nodes)
+              → DFS.reconstruct (plaintext bytes back in memory only)
+              → parse_pdf_bytes (in-memory parse)
+              → ReportStore.load_report_from_parsed (Fernet-encrypted chunks
+                in a tempdir-rooted Chroma)
+            The plaintext bytes go out of scope at function exit.
+            The encrypted DFS fragments persist for the session and are wiped
+            on next upload, end_session(), or interpreter exit.
+        """
+        raw = bytes(uploaded_file.getbuffer())
+
+        self._dfs.store(raw)
+        plaintext = self._dfs.reconstruct()
+        # Drop the original buffer ASAP
+        del raw
+
+        try:
+            parsed = parse_pdf_bytes(plaintext, uploaded_file.name)
+        finally:
+            del plaintext
+
+        if parsed is None:
+            self._dfs.delete_active()
+            raise ValueError(f"Failed to parse uploaded PDF: {uploaded_file.name}")
+
+        return self._report_store.load_report_from_parsed(parsed)
+
+    def end_session(self) -> None:
+        """Wipe all session-scoped patient state. The pipeline is unusable
+        after this — callers should construct a new RAGPipeline."""
+        try:
+            self._report_store.wipe()
+        except Exception as e:
+            logger.warning("end_session: report_store wipe failed: %s", e)
+        try:
+            self._dfs.wipe()
+        except Exception as e:
+            logger.warning("end_session: dfs wipe failed: %s", e)
 
     def _build_context(self, question: str) -> FusedContext:
         return self._retriever.retrieve(

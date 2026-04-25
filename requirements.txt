@@ -12,3 +12,5 @@ langchain-ollama
 numpy
 cryptography
 rank-bm25
+zstandard
+shamir-mnemonic

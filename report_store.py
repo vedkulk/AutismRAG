@@ -16,10 +16,14 @@ The store is per-Streamlit session; when a new report is loaded,
 the previous in-memory collection is replaced.
 """
 
+import atexit
 import logging
 import re
+import shutil
+import tempfile
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 import numpy as np
@@ -31,6 +35,8 @@ from phase1.pdf_parser import ParsedDocument, parse_pdf
 from phase1.chunker import TextChunk, chunk_document
 from phase1.embedder import OllamaEmbedder
 from crypto_utils import encrypt_text, decrypt_text
+
+CHROMA_TEMPDIR_PREFIX = "rag_chroma_"
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +63,12 @@ class ReportStore:
         embedder: Optional[OllamaEmbedder] = None,
         distance_metric: str = "cosine",
     ) -> None:
-        # Use an in-project persistent client for robustness with newer Chroma versions.
-        # The collection itself is still per-session/per-report.
+        # Persist Chroma data in a system tempdir so nothing survives session
+        # end. PersistentClient is used (rather than EphemeralClient) for
+        # consistent behaviour across Chroma versions.
+        self._chroma_dir = Path(tempfile.mkdtemp(prefix=CHROMA_TEMPDIR_PREFIX))
         self._client = chromadb.PersistentClient(
-            path="./data/session_chroma",
+            path=str(self._chroma_dir),
             settings=Settings(anonymized_telemetry=False),
         )
         self._collection = None
@@ -71,6 +79,7 @@ class ReportStore:
         self._plain_texts: List[str] = []
         self._metadatas: List[dict] = []
         self._bm25: Optional[BM25Okapi] = None
+        atexit.register(self._atexit_wipe)
 
     @property
     def metadata(self) -> Optional[ReportMetadata]:
@@ -94,14 +103,20 @@ class ReportStore:
         return self._collection
 
     def load_report_from_path(self, pdf_path: str) -> ReportMetadata:
-        """
-        Load a new patient report from a PDF path.
-        Replaces any existing in-memory collection.
-        """
-        self._reset_collection()
+        """Legacy entry point: parse a PDF from disk and ingest."""
         parsed: Optional[ParsedDocument] = parse_pdf(pdf_path)
         if parsed is None or not parsed.text.strip():
             raise ValueError(f"Failed to parse report PDF: {pdf_path}")
+        return self.load_report_from_parsed(parsed)
+
+    def load_report_from_parsed(self, parsed: ParsedDocument) -> ReportMetadata:
+        """Ingest an already-parsed report into a fresh collection. Used by
+        the in-memory upload path (parse_pdf_bytes → here) so no plaintext
+        PDF is ever written to disk."""
+        if parsed is None or not parsed.text.strip():
+            raise ValueError("Cannot ingest empty ParsedDocument")
+
+        self._reset_collection()
 
         chunks: List[TextChunk] = chunk_document(parsed)
         if not chunks:
@@ -137,6 +152,36 @@ class ReportStore:
             num_chunks=len(chunks),
         )
         return self._meta
+
+    def wipe(self) -> None:
+        """Drop the active collection and remove the on-disk Chroma tempdir."""
+        try:
+            if self._collection is not None:
+                try:
+                    self._client.delete_collection(self._collection.name)
+                except Exception:
+                    pass
+        finally:
+            self._collection = None
+            self._meta = None
+            self._plain_texts = []
+            self._metadatas = []
+            self._bm25 = None
+
+        # Drop client refs before removing the directory so file handles close
+        self._client = None
+        try:
+            shutil.rmtree(self._chroma_dir, ignore_errors=True)
+        except Exception as e:
+            logger.warning("Failed to remove Chroma tempdir %s: %s", self._chroma_dir, e)
+        logger.info("ReportStore wiped (chroma dir removed)")
+
+    def _atexit_wipe(self) -> None:
+        try:
+            if self._client is not None:
+                self.wipe()
+        except Exception:
+            pass
 
     def _dense_search(self, query: str, k: int) -> List[tuple[int, str, dict, float]]:
         """Dense cosine search via ChromaDB.
