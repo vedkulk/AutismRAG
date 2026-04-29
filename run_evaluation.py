@@ -22,7 +22,6 @@ import argparse
 import json
 import logging
 import os
-import sys
 import time
 from pathlib import Path
 
@@ -250,7 +249,6 @@ def main() -> None:
     }
 
     if args.advanced_rag:
-        config.hyde_enabled = True
         config.query_rewriting_enabled = True
         config.cross_encoder_enabled = True
         config.compression_enabled = True
@@ -260,7 +258,7 @@ def main() -> None:
         config_snapshot["advanced_rag"] = "cross-encoder only (CLI override)"
     else:
         config_snapshot["advanced_rag"] = (
-            f"hyde={config.hyde_enabled}, qr={config.query_rewriting_enabled}, "
+            f"qr={config.query_rewriting_enabled}, "
             f"ce={config.cross_encoder_enabled}, comp={config.compression_enabled}"
         )
 

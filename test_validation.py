@@ -61,7 +61,6 @@ def main():
 
     config = RAGConfig()
     if args.advanced_rag:
-        config.hyde_enabled = True
         config.query_rewriting_enabled = True
         config.cross_encoder_enabled = True
         config.compression_enabled = True

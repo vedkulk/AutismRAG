@@ -46,7 +46,6 @@ class RAGConfig:
     retrieval_type: str = "similarity"  # "similarity" | "mmr"
     mmr_lambda: float = 0.5
     # Phase 4 — Advanced RAG
-    hyde_enabled: bool = False
     query_rewriting_enabled: bool = False
     cross_encoder_enabled: bool = False
     compression_enabled: bool = False
@@ -80,7 +79,6 @@ class RAGConfig:
         c.report_top_k        = cfg.getint("retrieval", "report_top_k", fallback=c.report_top_k)
         c.retrieval_type      = cfg.get("retrieval", "retrieval_type",  fallback=c.retrieval_type)
         c.mmr_lambda          = cfg.getfloat("retrieval", "mmr_lambda", fallback=c.mmr_lambda)
-        c.hyde_enabled            = cfg.getboolean("advanced_rag", "hyde_enabled",            fallback=c.hyde_enabled)
         c.query_rewriting_enabled = cfg.getboolean("advanced_rag", "query_rewriting_enabled", fallback=c.query_rewriting_enabled)
         c.cross_encoder_enabled   = cfg.getboolean("advanced_rag", "cross_encoder_enabled",   fallback=c.cross_encoder_enabled)
         c.compression_enabled     = cfg.getboolean("advanced_rag", "compression_enabled",     fallback=c.compression_enabled)
@@ -123,7 +121,6 @@ class RAGPipeline:
 
         # Phase 4 — Advanced RAG orchestrator
         adv_config = AdvancedRAGConfig(
-            hyde_enabled=self.config.hyde_enabled,
             query_rewriting_enabled=self.config.query_rewriting_enabled,
             cross_encoder_enabled=self.config.cross_encoder_enabled,
             compression_enabled=self.config.compression_enabled,
@@ -132,8 +129,7 @@ class RAGPipeline:
             compression_top_k=self.config.compression_top_k,
         )
         any_enabled = (
-            adv_config.hyde_enabled
-            or adv_config.query_rewriting_enabled
+            adv_config.query_rewriting_enabled
             or adv_config.cross_encoder_enabled
             or adv_config.compression_enabled
         )

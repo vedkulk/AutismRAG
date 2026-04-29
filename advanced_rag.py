@@ -3,11 +3,10 @@ from __future__ import annotations
 """
 Phase 4 — Advanced RAG techniques.
 
-Provides four retrieval enhancements, each independently toggleable:
-  1. HyDE          – hypothetical document embedding for KB search
-  2. Query Rewrite – LLM-based clinical query reformulation
-  3. Cross-Encoder – re-ranking retrieved chunks with a cross-encoder
-  4. Compression   – extracting only query-relevant sentences from chunks
+Provides three retrieval enhancements, each independently toggleable:
+  1. Query Rewrite – LLM-based clinical query reformulation
+  2. Cross-Encoder – re-ranking retrieved chunks with a cross-encoder
+  3. Compression   – extracting only query-relevant sentences from chunks
 
 All techniques degrade gracefully: if one fails, the pipeline continues
 with the unmodified input.
@@ -15,9 +14,8 @@ with the unmodified input.
 
 import logging
 import math
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, List
 
 
 def _normalize_ce_score(score: float) -> float:
@@ -44,42 +42,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AdvancedRAGConfig:
-    hyde_enabled: bool = False
     query_rewriting_enabled: bool = False
     cross_encoder_enabled: bool = False
     compression_enabled: bool = False
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     rerank_top_k: int = 5
     compression_top_k: int = 5
-
-
-# ══════════════════════════════════════════════════════════════════════════
-#  HyDE — Hypothetical Document Embeddings
-# ══════════════════════════════════════════════════════════════════════════
-
-class HyDEGenerator:
-    """Generate a hypothetical clinical passage and embed it for KB search."""
-
-    _PROMPT = (
-        "Given the following clinical question about a child's development or "
-        "autism spectrum disorder, write a short clinical passage (3-5 sentences) "
-        "that would be found in a medical textbook or clinical guideline answering "
-        "this question. Write as if you are a pediatric developmental specialist.\n\n"
-        "Question: {query}\n\n"
-        "Clinical passage:"
-    )
-
-    def __init__(self, llm: LLMEngine, embedder: OllamaEmbedder) -> None:
-        self._llm = llm
-        self._embedder = embedder
-
-    def generate(self, query: str) -> str:
-        return self._llm.generate_raw(self._PROMPT.format(query=query))
-
-    def generate_embedding(self, query: str) -> list[float]:
-        hypothetical_doc = self.generate(query)
-        logger.info("HyDE generated %d-char hypothetical document", len(hypothetical_doc))
-        return self._embedder.embed_query(hypothetical_doc)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -256,7 +224,6 @@ class AdvancedRAGOrchestrator:
         embedder: OllamaEmbedder,
     ) -> None:
         self.config = config
-        self._hyde = HyDEGenerator(llm, embedder) if config.hyde_enabled else None
         self._rewriter = QueryRewriter(llm) if config.query_rewriting_enabled else None
         self._reranker = (
             CrossEncoderReranker(config.cross_encoder_model)
@@ -266,36 +233,15 @@ class AdvancedRAGOrchestrator:
 
     # ── Pre-retrieval: query transforms ──────────────────────────────────
 
-    def pre_retrieval(
-        self, query: str
-    ) -> Tuple[List[str], Optional[list[float]]]:
-        """
-        Run HyDE and multi-query rewriting in parallel.
-
-        Returns:
-            (list_of_query_variants, hyde_embedding or None)
-        """
-        query_variants: List[str] = []
-        hyde_emb: Optional[list[float]] = None
-
-        futures = {}
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            if self._rewriter:
-                futures[pool.submit(self._rewriter.rewrite_multi, query)] = "rewrite"
-            if self._hyde:
-                futures[pool.submit(self._hyde.generate_embedding, query)] = "hyde"
-
-            for future in as_completed(futures):
-                label = futures[future]
-                try:
-                    if label == "rewrite":
-                        query_variants = future.result()
-                    elif label == "hyde":
-                        hyde_emb = future.result()
-                except Exception as e:
-                    logger.warning("Advanced RAG %s failed, falling back: %s", label, e)
-
-        return query_variants, hyde_emb
+    def pre_retrieval(self, query: str) -> List[str]:
+        """Run multi-query rewriting; returns query variants (or empty list)."""
+        if not self._rewriter:
+            return []
+        try:
+            return self._rewriter.rewrite_multi(query)
+        except Exception as e:
+            logger.warning("Advanced RAG rewrite failed, falling back: %s", e)
+            return []
 
     # ── Post-retrieval: re-rank + compress ───────────────────────────────
 
@@ -304,7 +250,6 @@ class AdvancedRAGOrchestrator:
     ) -> List[ContextChunk]:
         """Apply cross-encoder re-ranking, then embedding-based compression."""
         chunks_before = len(chunks)
-        top_score_before = max((c.similarity for c in chunks), default=0.0)
 
         # Re-rank
         if self._reranker:

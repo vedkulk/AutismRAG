@@ -10,7 +10,7 @@ Responsibilities:
   - provide both non-streaming and streaming answer interfaces
 """
 
-from typing import List, Dict, Any, Iterable, Optional
+from typing import List, Any, Iterable
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_community.chat_models import ChatOllama

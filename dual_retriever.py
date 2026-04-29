@@ -5,7 +5,7 @@ Dual-source retriever with query classification:
   - classifies queries as patient / medical / general
   - routes retrieval to the appropriate store(s)
   - fuses and deduplicates results into a single context object
-  - (Phase 4) optionally applies HyDE, query rewriting, cross-encoder
+  - (Phase 4) optionally applies query rewriting, cross-encoder
     re-ranking, and contextual compression via AdvancedRAGOrchestrator
 """
 
@@ -113,7 +113,7 @@ def normalize_query(query: str, query_type: str) -> str:
     Returns the original query if no normalization is needed.
     """
     if query_type == "medical":
-        return query  # advanced RAG (HyDE + rewriting) handles medical queries
+        return query  # advanced RAG (rewriting) handles medical queries
 
     q = query.strip()
 
@@ -283,11 +283,10 @@ class DualRetriever:
 
         # ── Pre-retrieval transforms ─────────────────────────────────────
         query_variants: list[str] = [search_query]
-        hyde_embedding: Optional[list[float]] = None
 
-        # Only run HyDE/rewriting for medical or both queries
+        # Only run query rewriting for medical or both queries
         if self._advanced_rag and query_type != "patient":
-            variants, hyde_embedding = self._advanced_rag.pre_retrieval(search_query)
+            variants = self._advanced_rag.pre_retrieval(search_query)
             if variants:
                 all_queries = [search_query] + [v for v in variants if v.lower() != search_query.lower()]
                 query_variants = all_queries[:4]
@@ -296,12 +295,6 @@ class DualRetriever:
         report_hits = self.report_store.similarity_search(search_query, k=effective_report_k)
 
         all_kb_hits: list[dict] = []
-
-        if hyde_embedding is not None:
-            hyde_hits = self.kb_store.similarity_search_by_vector(
-                hyde_embedding, k=effective_kb_k,
-            )
-            all_kb_hits.extend(hyde_hits)
 
         if effective_kb_k > 0:
             per_variant_k = max(effective_kb_k // len(query_variants), 4)

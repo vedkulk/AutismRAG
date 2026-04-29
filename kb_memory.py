@@ -344,34 +344,3 @@ class InMemoryKB:
             )
         return results
 
-    def similarity_search_by_vector(
-        self, query_vector: list[float], k: int = 6
-    ) -> List[Dict[str, Any]]:
-        """Search KB using a pre-computed embedding vector (used by HyDE)."""
-        self._ensure_loaded()
-        if not self._entries:
-            return []
-
-        q_vec = np.asarray(query_vector, dtype=np.float32)
-        q_norm = np.linalg.norm(q_vec) + 1e-8
-
-        sims: List[float] = []
-        for entry in self._entries:
-            v = entry.embedding
-            sim = float(np.dot(q_vec, v) / (q_norm * (np.linalg.norm(v) + 1e-8)))
-            sims.append(sim)
-
-        idxs = np.argsort(sims)[::-1][:k]
-        results: List[Dict[str, Any]] = []
-        for rank, idx in enumerate(idxs, start=1):
-            entry = self._entries[int(idx)]
-            results.append(
-                {
-                    "text": entry.text,
-                    "metadata": entry.metadata,
-                    "distance": 1 - sims[int(idx)],
-                    "similarity": round(sims[int(idx)], 4),
-                    "rank": rank,
-                }
-            )
-        return results

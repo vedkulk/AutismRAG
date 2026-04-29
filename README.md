@@ -20,6 +20,15 @@ The persistent knowledge base (general medical guidelines, no PHI) is the only t
 
 ---
 
+## Documentation
+
+Deeper docs in `docs/`:
+
+- [`docs/architecture.md`](docs/architecture.md) — system overview, data flow, dual-store retrieval, privacy model
+- [`docs/modules.md`](docs/modules.md) — module-by-module reference (every Python file)
+- [`docs/configuration.md`](docs/configuration.md) — every `config.ini` field, what it affects, what invalidates what
+- [`docs/evaluation.md`](docs/evaluation.md) — RAGAS metrics, datasets, CLI flags
+
 ## Architecture
 
 ```
@@ -36,11 +45,11 @@ The persistent knowledge base (general medical guidelines, no PHI) is the only t
        │                   │                   │
 ┌──────▼──────┐   ┌────────▼────────┐   ┌──────▼──────┐
 │ DualRetriev │   │ AdvancedRAG     │   │ LLMEngine   │
-│ - classify  │   │ - HyDE          │   │ (Ollama)    │
-│ - normalize │   │ - QueryRewrite  │   └─────────────┘
-│ - fuse      │   │ - CrossEncoder  │
-└──┬────────┬─┘   │ - Compression   │
-   │        │    └─────────────────┘
+│ - classify  │   │ - QueryRewrite  │   │ (Ollama)    │
+│ - normalize │   │ - CrossEncoder  │   └─────────────┘
+│ - fuse      │   │ - Compression   │
+└──┬────────┬─┘   └─────────────────┘
+   │        │
    │        │
 ┌──▼──┐  ┌──▼──────────┐         ┌────────────┐
 │ KB  │  │ ReportStore │◄────────│ Ephemeral  │
@@ -57,7 +66,7 @@ The persistent knowledge base (general medical guidelines, no PHI) is the only t
 | `app.py` | Streamlit UI, CSS, message rendering, session lifecycle |
 | `rag_pipeline.py` | `RAGPipeline` facade + `RAGConfig` (loads from `config.ini`) |
 | `dual_retriever.py` | Query classification (patient/medical/both), query normalization, fusion of KB + report hits |
-| `advanced_rag.py` | Toggleable Phase 4 enhancements: HyDE, multi-query rewriting, cross-encoder rerank, embedding-based compression |
+| `advanced_rag.py` | Toggleable Phase 4 enhancements: multi-query rewriting, cross-encoder rerank, embedding-based compression |
 | `kb_memory.py` | Persistent KB store wrapper (`InMemoryKB`) |
 | `report_store.py` | Per-session Fernet-encrypted Chroma store |
 | `dfs/` | Ephemeral encrypt-and-fragment store for the uploaded PDF |
@@ -135,7 +144,7 @@ All tuning lives in `config.ini`. Notable sections:
 - `[ollama]` — model names and base URL
 - `[chunking]` — `chunk_size`, `chunk_overlap`, `min_chunk_size`
 - `[retrieval]` — `kb_top_k`, `report_top_k`, `retrieval_type` (`similarity` | `mmr`), `mmr_lambda`
-- `[advanced_rag]` — toggle HyDE / query rewriting / cross-encoder / compression independently
+- `[advanced_rag]` — toggle query rewriting / cross-encoder / compression independently
 - `[dfs]` — `num_fragments`, `num_key_shares`, `key_threshold` (Shamir secret-sharing parameters)
 
 Each advanced-RAG technique degrades gracefully: if it errors at runtime, the pipeline continues without it.
