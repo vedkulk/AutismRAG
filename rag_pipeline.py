@@ -13,6 +13,7 @@ It lazily initialises:
 
 import configparser
 import logging
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Iterable
 
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 class RAGConfig:
     kb_data_dir: str = "./data/kb_pdfs"
     kb_persist_dir: str = "./data/chroma_kb"
+    kb_cache_dir: str = "./data/kb_cache"
     kb_collection_name: str = "autism_kb_medical_guidelines"
     kb_top_k: int = 20
     report_top_k: int = 8
@@ -72,6 +74,7 @@ class RAGConfig:
         c.embed_model         = cfg.get("ollama",   "embed_model", fallback=c.embed_model)
         c.kb_data_dir         = cfg.get("paths",    "kb_data_dir", fallback=c.kb_data_dir)
         c.kb_persist_dir      = cfg.get("paths",    "chroma_db_dir", fallback=c.kb_persist_dir)
+        c.kb_cache_dir        = cfg.get("paths",    "kb_cache_dir", fallback=c.kb_cache_dir)
         c.chunk_size          = cfg.getint("chunking", "chunk_size",     fallback=c.chunk_size)
         c.chunk_overlap       = cfg.getint("chunking", "chunk_overlap",  fallback=c.chunk_overlap)
         c.min_chunk_size      = cfg.getint("chunking", "min_chunk_size", fallback=c.min_chunk_size)
@@ -95,6 +98,7 @@ class RAGConfig:
 class RAGPipeline:
     def __init__(self, config: Optional[RAGConfig] = None) -> None:
         self.config = config or RAGConfig()
+        self._ensure_kb_directories()
         self._embedder = OllamaEmbedder(
             model=self.config.embed_model,
             base_url=self.config.ollama_base_url,
@@ -102,6 +106,7 @@ class RAGPipeline:
         self._kb_store = InMemoryKB(
             data_dir=self.config.kb_data_dir,
             embedder=self._embedder,
+            cache_dir=self.config.kb_cache_dir,
             chunk_size=self.config.chunk_size,
             chunk_overlap=self.config.chunk_overlap,
             min_chunk_size=self.config.min_chunk_size,
@@ -143,6 +148,19 @@ class RAGPipeline:
             report_store=self._report_store,
             advanced_rag=advanced_rag,
         )
+    def _ensure_kb_directories(self) -> None:
+        for label, p in (
+            ("KB source dir", self.config.kb_data_dir),
+            ("KB Chroma dir", self.config.kb_persist_dir),
+            ("KB cache dir", self.config.kb_cache_dir),
+        ):
+            path = Path(p)
+            if path.exists() and not path.is_dir():
+                raise NotADirectoryError(f"{label} path is not a directory: {path}")
+            was_missing = not path.exists()
+            path.mkdir(parents=True, exist_ok=True)
+            if was_missing:
+                logger.info("startup: created missing %s at %s", label, path)
 
     @property
     def report_metadata(self) -> Optional[ReportMetadata]:
@@ -191,6 +209,10 @@ class RAGPipeline:
             self._dfs.wipe()
         except Exception as e:
             logger.warning("end_session: dfs wipe failed: %s", e)
+        try:
+            self._kb_store.reset()
+        except Exception as e:
+            logger.warning("end_session: kb_store reset failed: %s", e)
 
     def _build_context(self, question: str) -> FusedContext:
         return self._retriever.retrieve(

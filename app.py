@@ -919,9 +919,6 @@ def render_message(msg: dict, is_streaming: bool = False):
             st.markdown(
                 f'<div class="retrieval-meta">'
                 f'Retrieval quality: <span style="color:{g_color};font-weight:600;">{grounding}</span>'
-                f' &middot; {n_chunks} chunks'
-                f' &middot; avg sim {avg_sim:.3f}'
-                f' &middot; top sim {top_sim:.3f}'
                 f' &middot; {len(report_chunks)} report + {len(kb_chunks)} KB'
                 f'</div>',
                 unsafe_allow_html=True,

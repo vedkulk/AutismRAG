@@ -79,6 +79,13 @@ class InMemoryKB:
         self._tokenized_corpus: List[List[str]] = []
         self._loaded = False
 
+    def reset(self) -> None:
+        """Drop all loaded KB content from memory."""
+        self._entries = []
+        self._bm25 = None
+        self._tokenized_corpus = []
+        self._loaded = False
+
     def _cache_path(self) -> str:
         return os.path.join(self._cache_dir, "kb_cache.npz")
 
